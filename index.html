@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Trafic Péi</title>
+<meta name="theme-color" content="#0e1a2b">
+<meta name="description" content="Trafic en direct, radars et alertes de zones de danger à La Réunion">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Trafic Péi">
+<script>
+/* Sonde de démarrage : affiche toute erreur, même une erreur de syntaxe du script principal */
+window.__tpErrors = [];
+window.onerror = function(msg, src, line){ window.__tpErrors.push(msg + (line ? ' (ligne ' + line + ')' : '')); };
+setTimeout(function(){
+  var st = document.getElementById('status');
+  if (!st || st.getAttribute('data-ready') === '1') return;
+  st.className = 'status err';
+  st.textContent = window.__tpErrors.length ? 'Erreur : ' + window.__tpErrors[0] : 'Le script ne s\'est pas lancé';
+}, 8000);
+</script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* Deux vues : « Trafic » (carte Waze plein écran) et « Radars & conduite » (carte + panneau) */
+:root{
+  --bg:#f3f5f8; --panel:#ffffff; --ink:#0e1a2b; --muted:#5b6778; --line:#dfe4ec;
+  --accent:#1f4fbf; --rn:#c8102e; --zone:#e8590c;
+  --shadow:0 1px 2px rgba(14,26,43,.08),0 4px 16px rgba(14,26,43,.06);
+  --display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0b1320; --panel:#111c2d; --ink:#e7edf6; --muted:#93a1b5; --line:#22314a;
+    --accent:#6f9bff; --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.3); color-scheme:dark;
+  }
+}
+[hidden]{display:none!important}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{overflow:hidden;background:var(--bg);color:var(--ink);font:15px/1.45 var(--body);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.app{height:100%;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:10px max(16px,env(safe-area-inset-right)) 10px max(16px,env(safe-area-inset-left));
+  padding-top:max(10px,env(safe-area-inset-top));
+  background:var(--panel);border-bottom:1px solid var(--line);z-index:5}
+.brand h1{font:700 26px/1 var(--display);letter-spacing:.01em;margin:0;text-transform:uppercase;white-space:nowrap}
+.brand h1 span{color:var(--accent)}
+.tabs{display:flex;gap:4px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:3px}
+.tab{border:0;background:transparent;border-radius:7px;padding:6px 12px;font-weight:600;font-size:14px;color:var(--muted);white-space:nowrap}
+.tab[aria-selected="true"]{background:var(--panel);color:var(--ink);box-shadow:var(--shadow)}
+.status{margin-left:auto;font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40vw}
+.status.err{color:#d11a2a}
+
+.view{flex:1;min-height:0;position:relative}
+
+/* Vue Trafic (Waze) */
+#viewTraffic{display:flex;flex-direction:column}
+.zones{display:flex;gap:6px;overflow-x:auto;padding:8px max(16px,env(safe-area-inset-right)) 8px max(16px,env(safe-area-inset-left));
+  background:var(--panel);border-bottom:1px solid var(--line);scrollbar-width:none}
+.zones::-webkit-scrollbar{display:none}
+.zbtn{flex:none;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:5px 12px;font-size:13px;font-weight:600}
+.zbtn[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+.wazewrap{flex:1;min-height:0;position:relative;background:var(--bg)}
+#waze{position:absolute;inset:0;width:100%;height:100%;border:0}
+.credit{font-size:12px;color:var(--muted);padding:6px max(16px,env(safe-area-inset-right)) max(6px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));background:var(--panel);border-top:1px solid var(--line);display:flex;gap:10px;flex-wrap:wrap;justify-content:space-between}
+.credit a{color:var(--accent);font-weight:600}
+
+/* Vue Radars & conduite */
+#viewRadars{display:grid;grid-template-columns:1fr 360px}
+.mapwrap{position:relative;min-height:0}
+#map{position:absolute;inset:0;background:var(--bg)}
+.panel{min-height:0;overflow-y:auto;background:var(--panel);border-left:1px solid var(--line);
+  padding:16px max(16px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) 16px;display:flex;flex-direction:column;gap:20px}
+.panel h2{font:700 15px/1 var(--display);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 10px;display:flex;justify-content:space-between;align-items:baseline}
+.panel h2 em{font:500 12px var(--body);letter-spacing:0;text-transform:none;font-style:normal}
+.bigbtn{width:100%;border:0;border-radius:12px;padding:14px;font:700 20px/1 var(--display);letter-spacing:.03em;text-transform:uppercase;background:var(--zone);color:#fff;box-shadow:var(--shadow)}
+.bigbtn[aria-pressed="true"]{background:var(--ink);color:var(--panel)}
+.note{font-size:13px;color:var(--muted);margin:0}
+.radsum{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.radsum div{border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.radsum b{font:700 22px/1 var(--display);font-variant-numeric:tabular-nums;display:block}
+.radsum span{font-size:12px;color:var(--muted)}
+.empty{color:var(--muted);font-size:14px}
+.zl{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:14px}
+.zl li{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:6px}
+.zl b{font-variant-numeric:tabular-nums}
+
+.mapbtns{position:absolute;right:max(10px,env(safe-area-inset-right));top:10px;z-index:500;display:flex;flex-direction:column;gap:6px}
+.btn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:7px 12px;font-weight:600;font-size:14px;box-shadow:var(--shadow)}
+.btn[aria-pressed="false"]{opacity:.55}
+.btn:disabled{opacity:.35;cursor:default}
+
+.leaflet-container{font-family:var(--body)}
+.rad{position:relative;width:22px;height:22px;border-radius:5px;background:#1d2b44;color:#fff;display:grid;place-items:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)}
+.rad svg{width:13px;height:13px}
+.rad b{position:absolute;top:-9px;right:-12px;background:#fff;color:var(--rn);border:2px solid var(--rn);border-radius:50%;min-width:20px;height:20px;font:700 10px/16px var(--display);text-align:center}
+.pp h4{margin:0 0 4px;font:700 17px/1.15 var(--display)}
+.pp p{margin:2px 0;color:#4b5563}
+
+/* Bandeau conduite */
+.drive{position:absolute;left:max(10px,env(safe-area-inset-left));right:calc(150px + env(safe-area-inset-right));top:10px;z-index:600;
+  border-radius:14px;padding:12px 16px;display:flex;align-items:center;gap:14px;box-shadow:var(--shadow);
+  background:var(--panel);color:var(--ink);border:2px solid var(--line)}
+.drive .spd{font:700 44px/1 var(--display);font-variant-numeric:tabular-nums;min-width:2.2em;text-align:center}
+.drive .spd small{display:block;font:500 11px var(--body);color:var(--muted)}
+.drive .msg{font:700 22px/1.1 var(--display);text-transform:uppercase;letter-spacing:.02em}
+.drive .sub{font-size:13px;color:var(--muted)}
+.drive.zone{background:var(--zone);border-color:var(--zone);color:#fff;animation:pulse 1.2s ease-in-out 3}
+.drive.zone .sub,.drive.zone .spd small{color:#fff}
+@keyframes pulse{50%{transform:scale(1.03)}}
+
+@media (max-width:800px){
+  header{gap:8px}
+  .brand h1{font-size:22px}
+  .status{order:3;flex-basis:100%;max-width:none;margin-left:0;font-size:12px}
+  #viewRadars{grid-template-columns:1fr;grid-template-rows:55% 45%}
+  .panel{border-left:0;border-top:1px solid var(--line);padding-left:max(16px,env(safe-area-inset-left))}
+  .drive{right:max(10px,env(safe-area-inset-right));top:auto;bottom:10px}
+  .drive .msg{font-size:19px}
+}
+@media (prefers-reduced-motion:reduce){.drive.zone{animation:none}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><h1>Trafic <span>Péi</span></h1></div>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" id="tabTraffic" aria-selected="true" aria-controls="viewTraffic">Trafic en direct</button>
+      <button class="tab" role="tab" id="tabRadars" aria-selected="false" aria-controls="viewRadars">Radars &amp; conduite</button>
+    </div>
+    <span class="status" id="status">Démarrage…</span>
+  </header>
+
+  <!-- ===== Vue 1 : trafic en direct (carte Waze officielle intégrable) ===== -->
+  <section class="view" id="viewTraffic" role="tabpanel">
+    <div class="zones" id="zones"></div>
+    <div class="wazewrap">
+      <iframe id="waze" title="Carte du trafic Waze à La Réunion" allowfullscreen
+        src="https://embed.waze.com/fr/iframe?zoom=10&lat=-21.115&lon=55.536"></iframe>
+    </div>
+    <div class="credit">
+      <span>Bouchons, accidents, travaux et dangers signalés en direct par les conducteurs Waze.</span>
+      <a href="https://www.waze.com/fr/live-map" target="_blank" rel="noopener">Ouvrir la carte Waze complète</a>
+    </div>
+  </section>
+
+  <!-- ===== Vue 2 : radars et mode conduite ===== -->
+  <section class="view" id="viewRadars" role="tabpanel" hidden>
+    <div class="mapwrap">
+      <div id="map"></div>
+      <div class="drive" id="driveBox" hidden role="status" aria-live="assertive">
+        <div class="spd" id="driveSpd">–<small>km/h</small></div>
+        <div><div class="msg" id="driveMsg">Recherche GPS…</div><div class="sub" id="driveSub">Garde l'appli ouverte à l'écran</div></div>
+      </div>
+      <div class="mapbtns">
+        <button class="btn" id="tglRad" aria-pressed="true">Radars</button>
+        <button class="btn" id="locate">Ma position</button>
+      </div>
+    </div>
+    <aside class="panel">
+      <section>
+        <button class="bigbtn" id="drive" aria-pressed="false">Démarrer le mode conduite</button>
+        <p class="note" style="margin-top:8px">Annonce vocale à l'entrée et à la sortie des zones de danger. Garde l'appli ouverte à l'écran, téléphone sur un support.</p>
+      </section>
+      <section>
+        <h2>Radars fixes <em id="radCount"></em></h2>
+        <div class="radsum" id="radSum"><span class="empty">Chargement des radars…</span></div>
+      </section>
+      <section>
+        <h2>Zones de danger</h2>
+        <ul class="zl">
+          <li><span>En ville (limité à 50)</span><b>300 m</b></li>
+          <li><span>Sur route</span><b>2 km</b></li>
+          <li><span>Voie rapide (110 et plus)</span><b>4 km</b></li>
+        </ul>
+        <p class="note" style="margin-top:8px">La loi interdit d'indiquer à un conducteur l'emplacement précis d'un radar. Comme les GPS du commerce, l'appli annonce une zone, et masque les radars pendant la conduite.</p>
+      </section>
+      <section>
+        <p class="note">Positions des radars : OpenStreetMap (contributions bénévoles, liste rafraîchie toutes les 6 h). Radars mobiles et voitures radar non inclus.</p>
+      </section>
+    </aside>
+  </section>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+/* Rappel Apps Script : ne jamais écrire deux barres obliques de suite dans une chaîne JS
+   (Apps Script les prend pour un commentaire). Les adresses sont écrites en morceaux. */
+var H = 'https:' + '/' + '/';
+var $ = function(id){ return document.getElementById(id); };
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+function setStatus(t, err){ var s = $('status'); s.setAttribute('data-ready','1'); s.textContent = t; s.className = 'status' + (err ? ' err' : ''); }
+function store(k, v){ try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch(e){ return null; } }
+
+/* ================== VUE TRAFIC (WAZE) ================== */
+var ZONES = [
+  { name: 'Toute l\'île',        lat: -21.115, lon: 55.536, z: 10 },
+  { name: 'Saint-Denis',          lat: -20.890, lon: 55.460, z: 13 },
+  { name: 'Route du Littoral',    lat: -20.905, lon: 55.390, z: 13 },
+  { name: 'Le Port / Saint-Paul', lat: -20.975, lon: 55.300, z: 12 },
+  { name: 'Ouest (Tamarins)',     lat: -21.090, lon: 55.270, z: 12 },
+  { name: 'Saint-Pierre',         lat: -21.330, lon: 55.470, z: 12 },
+  { name: 'Est (Saint-André)',    lat: -20.980, lon: 55.660, z: 12 }
+];
+function wazeUrl(z){ return H + 'embed.waze.com/fr/iframe?zoom=' + z.z + '&lat=' + z.lat + '&lon=' + z.lon; }
+function showZone(i){
+  $('waze').src = wazeUrl(ZONES[i]);
+  $('zones').querySelectorAll('.zbtn').forEach(function(b, j){ b.setAttribute('aria-pressed', i === j ? 'true' : 'false'); });
+  store('tp_zone', String(i));
+}
+$('zones').innerHTML = ZONES.map(function(z, i){ return '<button class="zbtn" aria-pressed="false" data-i="' + i + '">' + esc(z.name) + '</button>'; }).join('');
+$('zones').querySelectorAll('.zbtn').forEach(function(b){ b.onclick = function(){ showZone(+b.getAttribute('data-i')); }; });
+var savedZone = parseInt(store('tp_zone'), 10);
+showZone(savedZone >= 0 && savedZone < ZONES.length ? savedZone : 0);
+
+/* ================== ONGLETS ================== */
+var mapReady = false;
+function showTab(name){
+  var radars = name === 'radars';
+  $('viewTraffic').hidden = radars; $('viewRadars').hidden = !radars;
+  $('tabTraffic').setAttribute('aria-selected', radars ? 'false' : 'true');
+  $('tabRadars').setAttribute('aria-selected', radars ? 'true' : 'false');
+  store('tp_tab', name);
+  if (radars) { if (!mapReady) initMap(); else setTimeout(function(){ map.invalidateSize(); }, 50); }
+}
+$('tabTraffic').onclick = function(){ showTab('traffic'); };
+$('tabRadars').onclick = function(){ showTab('radars'); };
+
+/* ================== CARTE DES RADARS (Leaflet + OpenStreetMap) ================== */
+var map, radLayer, meMarker = null, radarList = [];
+var RAD_TYPES = { maxspeed:'Vitesse', average_speed:'Tronçon', traffic_signals:'Feu rouge', level_crossing:'Passage à niveau', mindistance:'Distance de sécurité', noise:'Bruit' };
+var RAD_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 7h11l2 2.5V16H4zM17 11l4-2v6l-4-2z"/><circle cx="9.5" cy="11.5" r="2.4" fill="#1d2b44"/></svg>';
+
+function initMap(){
+  if (!window.L){ setStatus('La carte (Leaflet) ne se charge pas — vérifie ta connexion', true); return; }
+  mapReady = true;
+  map = L.map('map', { zoomControl: true }).setView([-21.115, 55.536], 10);
+  map.zoomControl.setPosition('bottomleft');
+  var tiles = [H + 'tile.openstreetmap.org/{z}/{x}/{y}.png', H + '{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png'];
+  var tIdx = 0, tErr = 0, tOk = false, base = null;
+  function setTiles(i){
+    if (base) map.removeLayer(base);
+    tIdx = i; tErr = 0; tOk = false;
+    base = L.tileLayer(tiles[i], { maxZoom: 19, subdomains: 'abc', attribution: '&copy; OpenStreetMap' }).addTo(map);
+    base.on('tileload', function(){ tOk = true; });
+    base.on('tileerror', function(){ tErr++; if (!tOk && tErr >= 4 && tIdx < tiles.length - 1) setTiles(tIdx + 1); });
+  }
+  setTiles(0);
+  radLayer = L.layerGroup().addTo(map);
+  [100, 600, 1500].forEach(function(t){ setTimeout(function(){ map.invalidateSize(); }, t); });
+  window.addEventListener('resize', function(){ map.invalidateSize(); });
+  drawRadars();
+}
+
+function drawRadars(){
+  if (!mapReady) return;
+  radLayer.clearLayers();
+  radarList.forEach(function(r){
+    var label = RAD_TYPES[r.kind] || 'Radar';
+    L.marker([r.lat, r.lon], {
+      icon: L.divIcon({ className: '', html: '<div class="rad">' + RAD_ICON + (r.speed ? '<b>' + r.speed + '</b>' : '') + '</div>', iconSize: [22,22], iconAnchor: [11,11] })
+    }).bindPopup('<div class="pp"><h4>Radar ' + esc(label.toLowerCase()) + '</h4>' +
+      (r.speed ? '<p>Limitation : <b>' + r.speed + ' km/h</b></p>' : '') +
+      (r.road ? '<p>' + esc(r.road) + '</p>' : '') + (r.name ? '<p>' + esc(r.name) + '</p>' : '') +
+      '<p style="font-size:12px">Source : OpenStreetMap</p></div>').addTo(radLayer);
+  });
+}
+
+function renderRadarSummary(){
+  var counts = {};
+  radarList.forEach(function(r){ counts[r.kind] = (counts[r.kind] || 0) + 1; });
+  var kinds = Object.keys(counts).sort(function(a, b){ return counts[b] - counts[a]; });
+  $('radCount').textContent = radarList.length ? radarList.length + ' sur l\'île' : '';
+  $('radSum').innerHTML = kinds.length
+    ? kinds.map(function(k){ return '<div><b>' + counts[k] + '</b><span>' + esc(RAD_TYPES[k] || k) + '</span></div>'; }).join('')
+    : '<span class="empty">Aucun radar fixe trouvé dans OpenStreetMap.</span>';
+}
+
+/* Radars : via le serveur Apps Script (Code.gs), sinon directement depuis le navigateur */
+function loadRadars(){
+  var hasServer = !!(window.google && google.script && google.script.run);
+  function ok(list){ radarList = list || []; renderRadarSummary(); drawRadars(); setStatus(radarList.length + ' radars fixes chargés'); }
+  function ko(msg){ $('radSum').innerHTML = '<span class="empty">Radars indisponibles pour le moment (' + esc(msg) + ').</span>'; setStatus('Radars indisponibles : ' + msg, true); }
+  if (hasServer){
+    google.script.run
+      .withSuccessHandler(function(r){ r && r.ok ? ok(r.list) : ko(r ? r.msg : 'réponse vide'); })
+      .withFailureHandler(function(e){ ko(e && e.message ? e.message : String(e)); })
+      .getRadars(false);
+    return;
+  }
+  var cached = null;
+  try { cached = JSON.parse(store('tp_radars') || 'null'); } catch(e){}
+  if (cached && Date.now() - cached.t < 6 * 3600 * 1000){ ok(cached.list); return; }
+  var q = '[out:json][timeout:25];(node["highway"="speed_camera"](-21.40,55.20,-20.85,55.85);relation["type"="enforcement"](-21.40,55.20,-20.85,55.85););out center tags;';
+  var servers = [H + 'overpass-api.de/api/interpreter', H + 'overpass.private.coffee/api/interpreter', H + 'maps.mail.ru/osm/tools/overpass/api/interpreter'];
+  setStatus('Chargement des radars…');
+  function tryServer(i){
+    if (i >= servers.length){
+      if (cached) { ok(cached.list); setStatus('Radars : dernière liste connue', false); }
+      else ko('serveurs OpenStreetMap indisponibles, réessaie plus tard');
+      return;
+    }
+    fetch(servers[i], { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })
+      .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(j){
+        var list = [];
+        (j.elements || []).forEach(function(e){
+          var t = e.tags || {};
+          var lat = e.lat != null ? e.lat : (e.center && e.center.lat), lon = e.lon != null ? e.lon : (e.center && e.center.lon);
+          if (lat == null || lon == null) return;
+          var kind = t.enforcement || 'maxspeed';
+          if (list.some(function(x){ return Math.abs(x.lat - lat) < 0.0004 && Math.abs(x.lon - lon) < 0.0004 && x.kind === kind; })) return;
+          list.push({ lat: lat, lon: lon, kind: kind, speed: parseInt(t.maxspeed, 10) || null, road: t.ref || '', name: t.name || t.description || '' });
+        });
+        store('tp_radars', JSON.stringify({ t: Date.now(), list: list }));
+        ok(list);
+      })
+      .catch(function(){ tryServer(i + 1); });
+  }
+  tryServer(0);
+}
+
+$('tglRad').onclick = function(){
+  if (!mapReady) return;
+  var on = this.getAttribute('aria-pressed') !== 'true'; this.setAttribute('aria-pressed', on ? 'true' : 'false');
+  on ? radLayer.addTo(map) : map.removeLayer(radLayer);
+};
+function placeMe(ll){
+  if (meMarker) meMarker.setLatLng(ll);
+  else meMarker = L.circleMarker(ll, { radius: 8, color: '#fff', weight: 3, fillColor: '#1f4fbf', fillOpacity: 1 }).addTo(map);
+}
+$('locate').onclick = function(){
+  if (!mapReady) return;
+  if (!navigator.geolocation){ setStatus('Localisation indisponible sur cet appareil', true); return; }
+  navigator.geolocation.getCurrentPosition(function(p){
+    var ll = [p.coords.latitude, p.coords.longitude]; placeMe(ll); map.setView(ll, 14);
+  }, function(){ setStatus('Position refusée ou introuvable', true); }, { enableHighAccuracy: true, timeout: 10000 });
+};
+
+/* ================== MODE CONDUITE : ALERTES ZONES DE DANGER ================== */
+var driving = false, watchId = null, wakeLock = null, audioCtx = null, inZone = false;
+
+function zoneLength(r){
+  if (r.speed && r.speed <= 50) return 300;
+  if (r.speed && r.speed >= 110) return 4000;
+  return 2000;
+}
+function distM(a, b, c, d){
+  var R = 6371000, k = Math.PI / 180, dLat = (c - a) * k, dLon = (d - b) * k;
+  var x = Math.pow(Math.sin(dLat / 2), 2) + Math.cos(a * k) * Math.cos(c * k) * Math.pow(Math.sin(dLon / 2), 2);
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+function beep(high){
+  try {
+    if (!audioCtx) return;
+    var o = audioCtx.createOscillator(), g = audioCtx.createGain(), t = audioCtx.currentTime;
+    o.frequency.value = high ? 880 : 520;
+    g.gain.setValueAtTime(0.001, t); g.gain.exponentialRampToValueAtTime(0.4, t + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t + 0.4);
+  } catch(e){}
+}
+function say(text){
+  try { if (!window.speechSynthesis) return; speechSynthesis.cancel(); var u = new SpeechSynthesisUtterance(text); u.lang = 'fr-FR'; speechSynthesis.speak(u); } catch(e){}
+}
+function setDrive(msg, sub, zone){
+  $('driveMsg').textContent = msg; $('driveSub').textContent = sub || '';
+  $('driveBox').classList.toggle('zone', !!zone);
+}
+function idleText(){ return radarList.length ? 'Surveillance active' : 'Liste des radars indisponible'; }
+
+function onFix(pos){
+  var c = pos.coords, ll = [c.latitude, c.longitude];
+  var kmh = (c.speed != null && c.speed >= 0) ? Math.round(c.speed * 3.6) : null;
+  $('driveSpd').innerHTML = (kmh == null ? '–' : kmh) + '<small>km/h</small>';
+  placeMe(ll); map.setView(ll, Math.max(map.getZoom(), 14));
+
+  var zone = null;
+  radarList.forEach(function(r){
+    var len = zoneLength(r);
+    if (distM(c.latitude, c.longitude, r.lat, r.lon) <= len && (!zone || len > zone.len)) zone = { len: len, speed: r.speed };
+  });
+
+  if (zone && !inZone){
+    inZone = true;
+    setDrive('Zone de danger', zone.speed ? 'Limitation ' + zone.speed + ' km/h' : 'Respecte la limitation', true);
+    beep(true); setTimeout(function(){ beep(true); }, 450);
+    say('Attention, zone de danger.' + (zone.speed ? ' Limitation ' + zone.speed + '.' : ''));
+    if (navigator.vibrate) navigator.vibrate([300, 150, 300]);
+  } else if (!zone && inZone){
+    inZone = false;
+    setDrive('Fin de zone', 'Bonne route', false); beep(false); say('Fin de zone de danger.');
+    setTimeout(function(){ if (driving && !inZone) setDrive('Route dégagée', idleText(), false); }, 5000);
+  } else if (!zone && $('driveMsg').textContent === 'Recherche GPS…'){
+    setDrive('Route dégagée', idleText(), false);
+  }
+}
+function onFixError(err){
+  setDrive(err.code === 1 ? 'Localisation refusée' : 'GPS en attente',
+           err.code === 1 ? 'Autorise la localisation pour ce site' : 'Nouvel essai en cours…', false);
+}
+function startDriving(){
+  if (!navigator.geolocation){ setStatus('Localisation indisponible sur cet appareil', true); return; }
+  if (!mapReady) initMap();
+  if (!mapReady) return;
+  driving = true; inZone = false;
+  $('drive').setAttribute('aria-pressed', 'true'); $('drive').textContent = 'Arrêter le mode conduite';
+  $('driveBox').hidden = false; setDrive('Recherche GPS…', 'Garde l\'appli ouverte à l\'écran', false);
+  try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch(e){}
+  say('Mode conduite activé.');
+  if (map.hasLayer(radLayer)) map.removeLayer(radLayer);
+  $('tglRad').disabled = true;
+  try { if (navigator.wakeLock) navigator.wakeLock.request('screen').then(function(w){ wakeLock = w; }).catch(function(){}); } catch(e){}
+  watchId = navigator.geolocation.watchPosition(onFix, onFixError, { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 });
+}
+function stopDriving(){
+  driving = false; inZone = false;
+  if (watchId != null) navigator.geolocation.clearWatch(watchId);
+  watchId = null;
+  try { if (wakeLock) wakeLock.release(); } catch(e){}
+  wakeLock = null;
+  $('drive').setAttribute('aria-pressed', 'false'); $('drive').textContent = 'Démarrer le mode conduite';
+  $('driveBox').hidden = true; $('tglRad').disabled = false;
+  if ($('tglRad').getAttribute('aria-pressed') === 'true') radLayer.addTo(map);
+}
+$('drive').onclick = function(){ driving ? stopDriving() : startDriving(); };
+document.addEventListener('visibilitychange', function(){
+  if (driving && document.visibilityState === 'visible' && navigator.wakeLock){
+    navigator.wakeLock.request('screen').then(function(w){ wakeLock = w; }).catch(function(){});
+  }
+});
+
+/* ================== DÉMARRAGE ================== */
+setStatus('Chargement…');
+showTab(store('tp_tab') === 'radars' ? 'radars' : 'traffic');
+loadRadars();
+</script>
+</body>
+</html>
